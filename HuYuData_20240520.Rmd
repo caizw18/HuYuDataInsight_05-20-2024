@@ -1,0 +1,163 @@
+---
+output:
+  pdf_document: default
+  html_document: default
+---
+# HuYuDataInsight LLC
+## Zhaowei Cai 20240520
+
+**Part 1**
+(a)
+```{r}
+library(quantmod)
+library(urca)
+library(forecast)
+library(tseries)
+library(fGarch)
+library(zoo)
+library(tseries)
+library(rugarch) 
+
+data = read.csv('TSLA2.csv')
+closing = data$Close # closing price
+log_closing = log(data$Close) # log closing price
+log_return = na.omit(diff(log(data$Close))) # log return
+
+# Visualize the data
+time = as.Date(data$Date, format = '%m/%d/%y')
+time <- time[1:1091]
+df = data.frame(datefield = time, TSLA = log_return)
+TSLA_stock = with(df, zoo(TSLA, order.by = time))
+plot.zoo(TSLA_stock, col=4, las=1, main="TSLA")
+
+##Check for the trend (the Augmented Dickey–Fuller (ADF) test)
+summary(ur.df(log_return, type='trend', lags=20, selectlags="BIC"))
+# From the result, we can see that the intercept is significantly 0. It means that the mean of the time series is 0, in other words, there is not a drift. 
+# Also, there is no linear trend for this time series because the coefficient for tt is not significant (alpha = 0.05). If we do a one-sided test, then the p-value = 0.03 which is significant
+
+
+##Check for the seasonality
+n = length(log_return)
+acf(log_return,main="ACF of the log return",yaxt="n")
+ci=qnorm(c(0.025, 0.975))/sqrt(n)
+text(y=ci,par("usr")[1],labels=round(ci,4),pos=2,xpd=TRUE)
+pacf(log_return,main="PACF of the log return",yaxt="n")
+text(y=ci,par("usr")[1],labels=round(ci,4),pos=2,xpd=TRUE)
+spec.pgram(log_return,main="Series: the log return")
+# we cannot find any evidence for seasonality. 
+
+# also
+adf.test(log_return)
+# accept the null hypothesis of non-stationary
+# difference is needed.
+# log_return = diff(log_closing)
+```
+
+(b)
+```{r}
+# Remove the drift
+# Demean or Difference
+adf.test(log_return)
+# We know that difference is needed
+
+# 1) demean:
+mean(log_return)
+log_return1=log_return-mean(log_return)
+
+acf(log_return1,lag=10,main="ACF of the demeaned log return",yaxt="n")
+text(y=ci,par("usr")[1],labels=round(ci,4),pos=2,xpd=TRUE)
+pacf(log_return1,lag=10,main="PACF of the demeaned log return",yaxt="n")
+text(y=ci,par("usr")[1],labels=round(ci,4),pos=2,xpd=TRUE)
+
+fit1 = auto.arima(log_return1, max.p=25, max.q=25, ic="bic",
+                       seasonal=F, lambda=NULL, 
+                       stepwise=FALSE, approximation=FALSE
+                       )
+summary(fit1)
+# ARIMA(0,1,0)
+# also shows that difference is needed
+tsdiag(fit1)
+shapiro.test(fit1$residuals)
+# The null-hypothesis of this test is that the population is normally distributed. 
+# The null hypothesis is rejected and there is evidence that the residuals tested are not normally distributed. 
+
+# 2) difference
+# log return = diff(log closing)
+# we can difference the data first and fit the log return
+fit2 = auto.arima(log_return, max.p=25, max.q=25, ic="bic",
+                       seasonal=F, lambda=NULL, 
+                       stepwise=FALSE, approximation=FALSE
+                       )
+summary(fit2) # ARMA(0,0)
+tsdiag(fit2)
+# Check the normality
+shapiro.test(fit2$residuals)
+```
+
+(c)
+```{r}
+prediction <- forecast(fit1, h=1, level=0.95)
+(lower_interval <- as.numeric(exp(prediction$lower+mean(log_closing))))
+(price_forecast <- as.numeric(exp(prediction$mean+mean(log_closing))))
+(upper_interval <- as.numeric(exp(prediction$upper+mean(log_closing))))
+
+
+# Print the forecasted closing price and prediction interval
+cat("1-day ahead closing price forecast:", price_forecast, "\n")
+cat("95% Prediction Interval: (", lower_interval, ", ", upper_interval, ")\n")
+```
+
+(d)
+```{r}
+# using log return
+summary(ur.df(log_return, type='trend', lags=20, selectlags="BIC"))
+# No drift, no trend
+# Stationary
+
+# 1) default mean model of ARMA(1,1)
+garch_spec <- ugarchspec()
+garch_fit1 <- ugarchfit(spec = garch_spec, data = log_return)
+garch_fit1
+
+# 2) Fit the mean model first
+arma_model <- auto.arima(log_return)
+arma_model
+garch_spec <- ugarchspec(variance.model = list(model = "sGARCH", garchOrder = c(1,1)),
+                         mean.model = list(armaOrder = c(0,0)))
+garch_fit2 <- ugarchfit(spec = garch_spec, data = arma_model$residuals)
+garch_fit2
+
+# 3) If difference is needed (here no need)
+arma_model <- auto.arima(diff(log_return))
+arma_model
+garch_spec <- ugarchspec(variance.model = list(model = "sGARCH", garchOrder = c(1,1)),
+                         mean.model = list(armaOrder = c(5,0)))
+garch_spec <- ugarchspec()
+garch_fit3 <- ugarchfit(spec = garch_spec, data = arma_model$residuals)
+garch_fit3
+```
+
+(e)
+```{r}
+# Use the garch_fit2 from d)
+forecasted_returns <- ugarchforecast(garch_fit2, n.ahead = 1)
+
+# Assuming the last observed closing price is on December 31, 2019
+# You may need to replace this with the actual closing price date
+last_close_price <- closing[1510]
+
+# Forecast one day ahead (May 6, 2020)
+(price_forecast <- as.numeric(last_close_price*exp(forecasted_returns@forecast$seriesFor)))
+
+# Calculate the 95% prediction interval
+(lower_interval <- as.numeric(price_forecast * exp(qnorm(0.025) * forecasted_returns@forecast$sigmaFor)))
+(upper_interval <- as.numeric(price_forecast * exp(qnorm(0.975) * forecasted_returns@forecast$sigmaFor)))
+
+# Print the forecasted closing price and prediction interval
+cat("1-day ahead closing price forecast:", price_forecast, "\n")
+cat("95% Prediction Interval: (", lower_interval, ", ", upper_interval, ")\n")
+# wider than the interval in c)
+```
+
+
+# The End
